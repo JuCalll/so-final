@@ -1,6 +1,6 @@
 # Proyecto final · Corte 3 · Sistemas Operativos 103027
 
-Grupo **sokj** · Juan Camilo Orozco Londoño y Karolay <Apellido> · UAM
+Grupo **sokj** · Juan Camilo Orozco Londoño y Karolay García · UAM
 
 Una página web en AWS que muestra una tabla de sistemas operativos. Los datos los trae de una API con base de datos que corre en Azure con Docker. Cada parte tiene su subdominio y HTTPS.
 
