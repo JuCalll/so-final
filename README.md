@@ -1,88 +1,121 @@
-# Trabajo final · Corte 3 · Sistemas Operativos 103027
+# Proyecto final · Corte 3 · Sistemas Operativos 103027
 
-Código base. **No hay que programar nada**: hay que desplegarlo y conectarlo.
-El enunciado completo está en el documento del trabajo final.
+Grupo **sokj** · Juan Camilo Orozco Londoño y Karolay <Apellido> · UAM
 
-```
-frontend/          Parte 1 · AWS EC2 con Nginx (sin Docker)
-  index.html       página que muestra la tabla
-  config.js        ← aquí va la URL de tu API
-backend/           Parte 2 · Azure con Docker
-  app.py           API en Flask con 2 endpoints
-  requirements.txt dependencias
-  .env.example     variables que necesita (cópialo a .env)
-db/
-  init.sql         crea la tabla y carga los datos
-```
+Una página web en AWS que muestra una tabla de sistemas operativos. Los datos los trae de una API con base de datos que corre en Azure con Docker. Cada parte tiene su subdominio y HTTPS.
 
-Endpoints de la API:
+| Parte | Servidor | URL | Qué corre |
+|---|---|---|---|
+| 1 · Frontend | AWS EC2 t3.micro, Ubuntu 24.04 | https://sokj.scaleautomatization.tech | Nginx instalado a mano, sin Docker, sirviendo `index.html` y `config.js` |
+| 2 · Backend | Azure VM Standard_B2ats_v2, Ubuntu 24.04, Chile Central | https://api-sokj.scaleautomatization.tech | Nginx + certbot como proxy inverso hacia dos contenedores con Docker Compose: `backend` (Flask + gunicorn) y `db` (PostgreSQL 17) |
 
-| Ruta | Responde |
+Imagen del backend: https://hub.docker.com/r/jucalll/so-backend (etiqueta `1.0`, linux/amd64)
+
+## Cómo se conectan
+
+1. El navegador descarga la página desde EC2.
+2. El JavaScript de la página lee `API_URL` de `config.js` y pide `/api/sistemas` a la API de Azure. La petición la hace el navegador, no el servidor de EC2.
+3. En Azure, Nginx recibe la petición en el 443 y la pasa a `127.0.0.1:8000`, donde escucha el contenedor `backend`.
+4. El backend consulta a Postgres por la red interna de Compose, usando el nombre del servicio (`db`) como host.
+5. La API responde con el encabezado `Access-Control-Allow-Origin: https://sokj.scaleautomatization.tech` (CORS), y el navegador deja que la página use los datos.
+
+La base de datos no publica ningún puerto, y el backend solo se publica en `127.0.0.1`. Desde internet solo están abiertos el 22, el 80 y el 443.
+
+## Archivos que agregamos
+
+| Archivo | Para qué |
 |---|---|
-| `GET /api/salud` | `{"estado": "ok"}` si la base de datos contesta |
-| `GET /api/sistemas` | la lista de sistemas operativos guardada en la base de datos |
+| `backend/Dockerfile` | Imagen del backend: `python:3.12-slim`, dependencias y gunicorn en `0.0.0.0:8000` |
+| `backend/.dockerignore` | Evita que el `.env` y la caché de Python entren a la imagen |
+| `compose.yaml` | Servicios `db` y `backend`, volumen `datos-db`, healthcheck y reinicio automático |
+| `nginx/aws-sokj.conf` | Sitio de la página en EC2, con HTTPS |
+| `nginx/azure-api-sokj.conf` | Proxy inverso de la API en Azure, con HTTPS |
+| `frontend/config.js` | Apunta a `https://api-sokj.scaleautomatization.tech` |
+| `README-codigo-base.md` | README original del código base (prueba en local) |
 
-Lo que te toca escribir a ti: el `Dockerfile` del backend, el `compose.yaml` de Azure
-y la configuración de Nginx de cada servidor.
+El `.env` real no está en el repositorio. La plantilla es `backend/.env.example`.
 
-## Cómo levantarlo en local
+## Parte 1 · AWS (Karolay)
 
-Sirve para probar que todo funciona antes de desplegar. Necesitas **Docker** y **Python 3.10+**.
-Abre tres terminales, todas en la raíz del proyecto.
-
-**1. Base de datos (terminal 1)**
+1. Instancia EC2 t3.micro con Ubuntu 24.04, llave `so-final-aws`, Security Group con 22, 80 y 443, e IP elástica.
+2. En la instancia:
 
 ```bash
-docker run --rm --name so-db -p 5432:5432 \
-  -e POSTGRES_USER=so -e POSTGRES_PASSWORD=so -e POSTGRES_DB=so \
-  -v "$PWD/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro" \
-  postgres:16
+sudo apt update
+sudo apt install -y nginx git certbot python3-certbot-nginx
+git clone https://github.com/JuCalll/so-final.git
+sudo mkdir -p /var/www/sokj
+sudo cp -r ~/so-final/frontend/* /var/www/sokj/
 ```
 
-`init.sql` crea la tabla y carga los datos al arrancar. Como el contenedor no usa volumen,
-cada vez que lo reinicias empieza desde cero.
+3. Sitio en `/etc/nginx/sites-available/sokj` (versión final en `nginx/aws-sokj.conf`):
 
-**2. Backend (terminal 2)**
+```bash
+sudo ln -s /etc/nginx/sites-available/sokj /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d sokj.scaleautomatization.tech
+```
+
+## Parte 2 · Azure (Juan)
+
+### Imagen (en el PC, no en la VM)
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-export DATABASE_URL=postgresql://so:so@localhost:5432/so
-export ORIGEN_PERMITIDO=http://localhost:8080
-flask --app app run --port 8000
+docker build -t jucalll/so-backend:1.0 .
+docker run --rm -p 8000:8000 -e DATABASE_URL=postgresql://x:x@localhost:5432/x jucalll/so-backend:1.0
+docker push jucalll/so-backend:1.0
 ```
 
-Comprueba que responde:
+El `DATABASE_URL` de prueba es necesario porque `app.py` lo lee al arrancar.
+
+### Máquina virtual
+
+- Azure for Students solo permite cinco regiones (canadacentral, spaincentral, brazilsouth, chilecentral, westus), y B1s sale `NotAvailableForSubscription`. Por eso usamos Chile Central con Standard_B2ats_v2 (2 vCPU, 1 GiB, x86).
+- NSG con 22, 80 y 443. IP pública estática: 68.211.88.154.
+- 2 GB de swap, porque la VM tiene 1 GiB de RAM.
+- Docker con `curl -fsSL https://get.docker.com | sudo sh` y el usuario en el grupo `docker`.
+
+### Compose
 
 ```bash
-curl http://localhost:8000/api/salud      # {"estado":"ok"}
-curl http://localhost:8000/api/sistemas   # lista de sistemas operativos
+git clone https://github.com/JuCalll/so-final.git
+cd so-final
+cp backend/.env.example .env   # HOST_DE_LA_DB pasa a ser db y se pone una clave propia
+docker compose up -d
+docker compose ps
+curl http://127.0.0.1:8000/api/sistemas
 ```
 
-> Flask no lee el archivo `.env` por sí solo, por eso en local se usan `export`.
+- `db` usa `postgres:17-alpine`, guarda los datos en el volumen `datos-db` y ejecuta `db/init.sql` la primera vez, con el volumen vacío.
+- `backend` espera a que `db` pase el healthcheck (`pg_isready`) y se publica solo en `127.0.0.1:8000`.
+- Los dos tienen `restart: unless-stopped`: probamos reiniciar la VM y volvieron a levantar solos.
 
-**3. Frontend (terminal 3)**
-
-Cambia temporalmente `frontend/config.js` para que apunte a tu API local:
-
-```js
-const API_URL = "http://localhost:8000";
-```
-
-Y sírvelo:
+### Nginx y HTTPS
 
 ```bash
-cd frontend
-python3 -m http.server 8080
+sudo apt install -y nginx certbot python3-certbot-nginx
+# sitio /etc/nginx/sites-available/api-sokj con proxy_pass http://127.0.0.1:8000
+sudo ln -s /etc/nginx/sites-available/api-sokj /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d api-sokj.scaleautomatization.tech
 ```
 
-Abre <http://localhost:8080>: debe aparecer la tabla. Si sale vacía, abre la consola del
-navegador (F12). Un error de CORS significa que `ORIGEN_PERMITIDO` no coincide exactamente
-con `http://localhost:8080`.
+## Integración
 
-> Antes de desplegar, vuelve a poner en `config.js` la URL pública de tu backend en Azure.
+- `frontend/config.js`: `const API_URL = "https://api-sokj.scaleautomatization.tech";`
+- `.env` de Azure: `ORIGEN_PERMITIDO=https://sokj.scaleautomatization.tech`
 
-**Para apagar todo:** `Ctrl+C` en cada terminal. El contenedor de Postgres se borra solo (`--rm`).
+## Verificación
+
+```bash
+curl https://api-sokj.scaleautomatization.tech/api/salud      # {"estado":"ok"}
+curl https://api-sokj.scaleautomatization.tech/api/sistemas   # 8 sistemas operativos
+curl -s -I -H "Origin: https://sokj.scaleautomatization.tech" https://api-sokj.scaleautomatization.tech/api/sistemas | grep -i access-control
+```
+
+Al abrir https://sokj.scaleautomatization.tech, la tabla muestra los 8 sistemas, de UNIX (1969) a Android (2008).
